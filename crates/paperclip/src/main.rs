@@ -80,6 +80,8 @@ pub struct ListArgs {
 pub struct PromoteArgs {
     #[arg(value_name = "ID")]
     pub id: String,
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -88,6 +90,8 @@ pub struct NoteArgs {
     pub id: String,
     #[arg(value_name = "TEXT")]
     pub text: String,
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -117,6 +121,8 @@ pub enum OutputFormat {
     Md,
 }
 
+/// Dispatch CLI commands, including attributed note and promote events.
+/// @return Exits with the command's contract status.
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -147,11 +153,11 @@ fn main() {
             args.where_loc, cli.file, cli.pretty,
         ).unwrap_or_else(|error| paper_core::output::write_error(&error)),
         Command::Promote(args) => commands::promote(
-            args.id, cli.file, cli.pretty,
+            args.id, args.agent, cli.file, cli.pretty,
             paper_core::effective_now().unwrap(),
         ).unwrap_or_else(|error| paper_core::output::write_error(&error)),
         Command::Note(args) => commands::note(
-            args.id, args.text, cli.file, cli.pretty,
+            args.id, args.text, args.agent, cli.file, cli.pretty,
             paper_core::effective_now().unwrap(),
         ).unwrap_or_else(|error| paper_core::output::write_error(&error)),
         Command::Top(args) => commands::top(
@@ -167,8 +173,8 @@ fn main() {
                 "commands": {
                     "add": {"flags": {"--impact": "nice|solid|huge; default nice", "--tag": "TAG; repeatable", "--agent": "NAME", "--dry-run": "boolean", "--where": "COMPONENT"}, "positional": "TEXT or -"},
                     "list": {"flags": {"--tag": "TAG", "--impact": "nice|solid|huge", "--status": "open|promoted|noted|all; default open", "--limit": "N; default 50", "--format": "json|md; default json", "--where": "COMPONENT"}},
-                    "promote": {"positional": "ID"},
-                    "note": {"positional": "ID TEXT"},
+                    "promote": {"flags": {"--agent": "NAME"}, "positional": "ID"},
+                    "note": {"flags": {"--agent": "NAME"}, "positional": "ID TEXT"},
                     "top": {"flags": {"--limit": "N; default 10"}},
                     "review": {"flags": {"--format": "json|md; default json"}, "description": "Reads both .papercuts.jsonl and .paperclips.jsonl. Emits Fix/Keep/Overlaps digest."},
                     "schema": {"description": "Print this contract."},

@@ -148,9 +148,18 @@ pub fn list(
     Ok(0)
 }
 
-pub fn promote(id: String, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
+/// Append a promotion with the same agent precedence as clip creation.
+/// @param id Clip ID or prefix.
+/// @param agent Optional explicit agent, ahead of environment and detection.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print the response.
+/// @param now Event timestamp.
+/// @return Zero on success.
+/// @throws AppError On discovery, lookup, log IO, or output failure.
+pub fn promote(id: String, agent: Option<String>, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
     let resolved = store::discover_clips(file)?;
     let ts = format_timestamp(now);
+    let (agent, _) = resolve_agent(agent);
     store::with_exclusive(&resolved.path, false, |log| {
         let bytes = store::read_bytes(log, &resolved.path)?;
         let folded = store::fold_clip_bytes(&bytes);
@@ -166,6 +175,7 @@ pub fn promote(id: String, file: Option<PathBuf>, pretty: bool, now: Timestamp) 
             "kind": "promote",
             "id": item.clip.id,
             "ts": ts,
+            "agent": agent,
         });
         store::append_json(log, &resolved.path, &bytes, &event)?;
         Ok(())
@@ -176,9 +186,19 @@ pub fn promote(id: String, file: Option<PathBuf>, pretty: bool, now: Timestamp) 
     Ok(0)
 }
 
-pub fn note(id: String, text: String, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
+/// Append an attributed note without closing the clip.
+/// @param id Clip ID or prefix.
+/// @param text Follow-up observation.
+/// @param agent Optional explicit agent, ahead of environment and detection.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print the response.
+/// @param now Event timestamp.
+/// @return Zero on success.
+/// @throws AppError On discovery, lookup, log IO, or output failure.
+pub fn note(id: String, text: String, agent: Option<String>, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
     let resolved = store::discover_clips(file)?;
     let ts = format_timestamp(now);
+    let (agent, _) = resolve_agent(agent);
     store::with_exclusive(&resolved.path, false, |log| {
         let bytes = store::read_bytes(log, &resolved.path)?;
         let folded = store::fold_clip_bytes(&bytes);
@@ -192,6 +212,7 @@ pub fn note(id: String, text: String, file: Option<PathBuf>, pretty: bool, now: 
             "id": item.clip.id,
             "ts": ts,
             "text": text,
+            "agent": agent,
         });
         store::append_json(log, &resolved.path, &bytes, &event)?;
         Ok(())

@@ -145,12 +145,21 @@ pub struct ClipRecord {
     pub repo: Option<String>,
 }
 
+/// Read a present event agent as a string; only a missing field may default.
+/// @param deserializer Serde field deserializer.
+/// @return The supplied agent, without inventing attribution for legacy events.
+/// @throws D::Error When the supplied value is not a string (including null).
+fn present_agent<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromoteRecord {
     pub kind: String,
     pub id: String,
     pub ts: String,
-    pub agent: String,
+    #[serde(default, deserialize_with = "present_agent", skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +167,8 @@ pub struct NoteRecord {
     pub kind: String,
     pub id: String,
     pub ts: String,
-    pub agent: String,
+    #[serde(default, deserialize_with = "present_agent", skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub text: String,
 }
 
@@ -174,7 +184,8 @@ pub struct ClipListItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipNote {
     pub ts: String,
-    pub agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub text: String,
 }
 
