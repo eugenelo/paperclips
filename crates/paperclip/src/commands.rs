@@ -4,7 +4,7 @@ use paper_core::store;
 use paper_core::{ClipRecord, ClipStatus, Impact, compute_clip_id, format_timestamp, normalize_where, resolve_agent};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use crate::{OutputFormat, StatusFilter};
@@ -102,14 +102,26 @@ pub struct ClipListData {
     pub items: Vec<paper_core::ClipListItem>,
     pub count: usize,
     pub total: usize,
+    pub truncated: bool,
 }
 
+/// List matching clips in the requested format, with visible truncation warnings.
+/// @param tag Optional tag filter.
+/// @param impact Optional impact filter.
+/// @param status_filter Included lifecycle statuses.
+/// @param limit Maximum number of matching clips to return.
+/// @param format Markdown or JSON output.
+/// @param where_loc Optional exact location filter.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print JSON.
+/// @return Zero on success, including a missing log.
+/// @throws AppError On discovery, log IO other than missing files, or output failure.
 pub fn list(
     tag: Option<String>,
     impact: Option<Impact>,
     status_filter: StatusFilter,
     limit: usize,
-    _format: OutputFormat,
+    format: OutputFormat,
     where_loc: Option<String>,
     file: Option<PathBuf>,
     pretty: bool,
@@ -121,9 +133,13 @@ pub fn list(
     }) {
         Ok(f) => f,
         Err(e) if e.code == "not_found" => {
-            let meta = Meta::new();
-            output::write_success(ClipListData { items: vec![], count: 0, total: 0 }, pretty, meta)
-                .map_err(|e2| AppError::from_io(e2, std::path::Path::new("stdout")))?;
+            if format == OutputFormat::Md {
+                write_markdown(&[], &[])?;
+            } else {
+                let meta = Meta::new();
+                output::write_success(ClipListData { items: vec![], count: 0, total: 0, truncated: false }, pretty, meta)
+                    .map_err(|e2| AppError::from_io(e2, std::path::Path::new("stdout")))?;
+            }
             return Ok(0);
         }
         Err(e) => return Err(e),
@@ -142,10 +158,60 @@ pub fn list(
     let total = items.len();
     items.truncate(limit);
     let count = items.len();
-    let meta = Meta::new();
-    output::write_success(ClipListData { items, count, total }, pretty, meta)
-        .map_err(|e| AppError::from_io(e, std::path::Path::new("stdout")))?;
+    let truncated = total > count;
+    let mut meta = Meta::new();
+    if truncated {
+        meta.warnings.push(format!(
+            "showing {count} of {total} matching clips; use --limit {total} to see all"
+        ));
+    }
+    if format == OutputFormat::Md {
+        write_markdown(&items, &meta.warnings)?;
+    } else {
+        output::write_success(ClipListData { items, count, total, truncated }, pretty, meta)
+            .map_err(|e| AppError::from_io(e, std::path::Path::new("stdout")))?;
+    }
     Ok(0)
+}
+
+/// Render clips grouped by impact without allocating intermediate groups.
+/// @param items Selected clips in log order.
+/// @param warnings Notices to append after the listing.
+/// @return Success after writing and flushing Markdown to stdout.
+/// @throws AppError On stdout write or flush failure.
+fn write_markdown(items: &[paper_core::ClipListItem], warnings: &[String]) -> AppResult<()> {
+    let mut output = std::io::BufWriter::new(std::io::stdout().lock());
+    let write = |output: &mut std::io::BufWriter<std::io::StdoutLock<'_>>| -> std::io::Result<()> {
+        for impact in [Impact::Huge, Impact::Solid, Impact::Nice] {
+            let mut matching = items.iter().filter(|item| item.clip.impact == impact).peekable();
+            if matching.peek().is_none() {
+                continue;
+            }
+            writeln!(output, "## {}", impact.as_str())?;
+            for item in matching {
+                write!(output, "- [{}] ", item.clip.id)?;
+                for (index, line) in item.clip.text.lines().enumerate() {
+                    if index > 0 {
+                        write!(output, " ")?;
+                    }
+                    write!(output, "{line}")?;
+                }
+                write!(output, " — {}", impact.as_str())?;
+                if let Some(where_loc) = &item.clip.where_loc {
+                    write!(output, ", where: {where_loc}")?;
+                }
+                if item.status != ClipStatus::Open {
+                    write!(output, ", {}", item.status.as_str())?;
+                }
+                writeln!(output)?;
+            }
+        }
+        for warning in warnings {
+            writeln!(output, "> note: {warning}")?;
+        }
+        output.flush()
+    };
+    write(&mut output).map_err(|error| AppError::from_io(error, std::path::Path::new("stdout")))
 }
 
 /// Append a promotion with the same agent precedence as clip creation.

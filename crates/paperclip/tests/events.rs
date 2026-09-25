@@ -104,3 +104,100 @@ fn malformed_events_still_warn() {
         assert_eq!(folded.warnings, ["skipped 1 malformed line"]);
     }
 }
+
+/// Run Markdown listing against an isolated log.
+/// @param file Clip log path, which may not exist.
+/// @param args Additional list filters and limits.
+/// @return Successful stdout as UTF-8.
+fn markdown(file: &Path, args: &[&str]) -> String {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("paperclip")
+        .env("PAPERCLIP_FILE", file)
+        .args(["list", "--format", "md"])
+        .args(args).output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert!(output.stderr.is_empty());
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Render each clip on one line, retaining location, impact, and lifecycle state.
+#[test]
+fn markdown_lists_clip_details_and_status() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("clips.jsonl");
+    for (text, impact, location, event) in [
+        ("Open\nobservation", "nice", Some("probe/one"), None),
+        ("Noted observation", "solid", Some("probe/two"), Some("note")),
+        ("Promoted observation", "huge", None, Some("promote")),
+    ] {
+        let mut args = vec!["add", text, "--impact", impact];
+        if let Some(location) = location {
+            args.extend(["--where", location]);
+        }
+        let added = run(&file, &args);
+        let id = added["data"]["record"]["id"].as_str().unwrap();
+        if let Some(event) = event {
+            let args = if event == "note" { vec![event, id, "Retained"] } else { vec![event, id] };
+            run(&file, &args);
+        }
+        let md = markdown(&file, &["--status", "all"]);
+        let line = md.lines().find(|line| line.starts_with(&format!("- [{id}]"))).unwrap();
+        assert!(line.contains(&text.replace('\n', " ")));
+        assert!(line.contains(impact));
+        if let Some(location) = location {
+            assert!(line.contains(location));
+        } else {
+            assert!(!line.contains("where:"));
+        }
+        match event {
+            Some("note") => assert!(line.contains("noted")),
+            Some("promote") => assert!(line.contains("promoted")),
+            _ => assert!(!line.contains(", open")),
+        }
+    }
+    assert_eq!(markdown(&file, &["--status", "all"]).lines().filter(|line| line.starts_with("- [")).count(), 3);
+}
+
+/// A missing log remains successful and produces no JSON in Markdown mode.
+#[test]
+fn missing_clip_log_honors_format() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("missing.jsonl");
+    assert_eq!(markdown(&file, &[]), "");
+    let listed = run(&file, &["list"]);
+    assert_eq!(listed["data"], json!({"items":[], "count":0, "total":0, "truncated":false}));
+    assert_eq!(listed["meta"], json!({"contract":1}));
+    assert!(!file.exists());
+}
+
+/// Compute truncation after filtering and share the warning across output formats.
+#[test]
+fn clip_truncation_is_visible_after_filtering() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("clips.jsonl");
+    for text in ["first", "second", "third"] {
+        run(&file, &["add", text, "--where", "selected"]);
+    }
+    run(&file, &["add", "outside filter", "--where", "other"]);
+    for (limit, count, truncated) in [("0", 0, true), ("2", 2, true), ("3", 3, false)] {
+        let args = ["--where", "selected", "--limit", limit];
+        let listed = run(&file, &[&["list"], &args[..]].concat());
+        assert_eq!(listed["data"]["count"], count);
+        assert_eq!(listed["data"]["items"].as_array().unwrap().len(), count);
+        assert_eq!(listed["data"]["total"], 3);
+        assert_eq!(listed["data"]["truncated"], truncated);
+        let md = markdown(&file, &args);
+        assert_eq!(md.lines().filter(|line| line.starts_with("- [")).count(), count);
+        if truncated {
+            let warnings = listed["meta"]["warnings"].as_array().unwrap();
+            assert_eq!(warnings.len(), 1);
+            let notice = warnings[0].as_str().unwrap();
+            assert!(notice.contains(&count.to_string()));
+            assert!(notice.contains('3'));
+            assert!(notice.contains("--limit"));
+            assert_eq!(md.lines().last().unwrap(), format!("> note: {notice}"));
+        } else {
+            assert!(listed["meta"].get("warnings").is_none());
+            assert!(!md.contains("> note:"));
+        }
+    }
+}

@@ -996,3 +996,37 @@ fn error_envelope_matrix() {
         "ambiguous_id",
     );
 }
+
+/// Report omitted matching cuts in both formats, but not at the exact limit.
+#[test]
+fn list_truncation_is_visible_after_filtering() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("cuts.jsonl");
+    for text in ["first", "second", "third"] {
+        success::<AddData>(&run_file(&file, &["add", text, "--tag", "selected"]));
+    }
+    add(&file, "outside filter");
+    for (limit, count, truncated) in [("0", 0, true), ("2", 2, true), ("3", 3, false)] {
+        let args = ["list", "--tag", "selected", "--limit", limit];
+        let listed: SuccessEnvelope<ListData> = success(&run_file(&file, &args));
+        assert_eq!(listed.data.count, count);
+        assert_eq!(listed.data.items.len(), count);
+        assert_eq!(listed.data.total, 3);
+        assert_eq!(listed.data.truncated, truncated);
+        let md = run_file(&file, &[&args[..], &["--format", "md"]].concat());
+        assert!(md.status.success());
+        assert!(md.stderr.is_empty());
+        let md = String::from_utf8(md.stdout).unwrap();
+        assert_eq!(md.lines().filter(|line| line.starts_with("- [")).count(), count);
+        let notice = listed.meta.warnings.iter().find(|warning| warning.contains("--limit"));
+        assert_eq!(notice.is_some(), truncated);
+        if let Some(notice) = notice {
+            assert!(notice.contains(&count.to_string()));
+            assert!(notice.contains('3'));
+            assert!(md.lines().last().unwrap().contains("--limit") || count == 0);
+            assert!(md.contains(&format!("> note: {notice}")));
+        } else {
+            assert!(!md.contains("> note:"));
+        }
+    }
+}

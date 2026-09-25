@@ -53,3 +53,13 @@ CLIP: "auto-dispatches useful work, cleared the backlog unattended" — value de
 - Append-only. stdout = data only. stderr = errors only.
 - Old logs without `where` still work (review treats them as unjoinable).
 - The `.paperclips.jsonl` in this repo is dogfood — 3 entries (2 clips, 1 cut) demonstrating production format.
+
+## List output
+
+Both list commands default to at most 50 matching records.
+Use `--limit N` to change that cap.
+When the cap omits matches, Markdown appends a `> note:` with the shown and total counts and a limit that displays all matches.
+JSON carries the same notice in `meta.warnings`; `data.count` counts returned items, `data.total` counts all matches after filtering, and `data.truncated` reports whether any matches were omitted.
+
+`paperclip list --format md` groups clips by impact and renders one line per clip with its id, text, impact, optional `where`, and any non-open status.
+A missing clips log produces an empty Markdown listing with exit code 0.

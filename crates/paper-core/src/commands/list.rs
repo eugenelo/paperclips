@@ -16,6 +16,13 @@ pub struct ListData {
     pub truncated: bool,
 }
 
+/// List matching cuts and make any limit-induced omission visible in both formats.
+/// @param args Filters, limit, and requested output format.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print JSON.
+/// @param now Reference timestamp for relative date filters.
+/// @return Zero on success.
+/// @throws AppError On discovery, filtering, log IO, or output failure.
 pub fn run(args: ListArgs, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
     let resolved = store::discover(file)?;
     let mut warnings = Vec::new();
@@ -86,6 +93,12 @@ pub fn run(args: ListArgs, file: Option<PathBuf>, pretty: bool, now: Timestamp) 
         truncated: total > items.len(),
         items,
     };
+    if data.truncated {
+        warnings.push(format!(
+            "showing {} of {} matching cuts; use --limit {} to see all",
+            data.count, data.total, data.total
+        ));
+    }
     if data.items.is_empty() {
         warnings.push("no papercuts matched; try --status all or broader filters".into());
     }
