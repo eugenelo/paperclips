@@ -950,6 +950,109 @@ fn doctor_reports_gitignored_finding() {
     );
 }
 
+/// Run Git for a fixture under an isolated configuration that ignores nothing by default.
+/// @param home Isolated HOME and XDG_CONFIG_HOME root.
+/// @param cwd Directory to run in.
+/// @param args Git arguments.
+/// @return Captured stdout as UTF-8.
+fn fixture_git(home: &Path, cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A linked worktree appends to its main checkout's ignored `.scratch/` log, keeping earlier
+/// entries and creating nothing in the worktree; main checkouts and bare-repository
+/// worktrees keep the per-root default.
+#[test]
+fn linked_worktree_logs_land_in_main_checkout_scratch() {
+    let git_available = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !git_available {
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let main = temp.path().join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    fixture_git(&home, &main, &["init", "-q", "-b", "main"]);
+    std::fs::write(main.join("README.md"), "fixture\n").unwrap();
+    fixture_git(&home, &main, &["add", "README.md"]);
+    fixture_git(&home, &main, &["commit", "-q", "-m", "fixture"]);
+    let worktree = temp.path().join("main-task");
+    fixture_git(&home, &main, &["worktree", "add", "-q", "-b", "dev-cycle/task", worktree.to_str().unwrap()]);
+    let main = main.canonicalize().unwrap();
+    let worktree = worktree.canonicalize().unwrap();
+    let shared = main.join(".scratch/papercuts.jsonl");
+    add(&shared, "earlier entry");
+    let earlier = std::fs::read(&shared).unwrap();
+    let nested = worktree.join("sub/dir");
+    std::fs::create_dir_all(&nested).unwrap();
+    let linked = |args: &[&str]| {
+        command()
+            .current_dir(&nested)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let dry: SuccessEnvelope<AddData> = success(&linked(&["add", "dry", "--agent", "a", "--dry-run"]));
+    assert_eq!(dry.meta.file.as_deref(), Some(shared.to_str().unwrap()));
+    assert!(!main.join(".git/info/exclude").exists() || !std::fs::read_to_string(main.join(".git/info/exclude")).unwrap().contains(".scratch/"));
+
+    let first: SuccessEnvelope<AddData> = success(&linked(&["add", "from worktree", "--agent", "a"]));
+    assert_eq!(first.meta.file.as_deref(), Some(shared.to_str().unwrap()));
+    assert!(first.meta.warnings.iter().any(|warning| warning.contains("added .scratch/ to")));
+    assert_eq!(first.data.record.cwd, "sub/dir");
+    assert_eq!(first.data.record.repo.as_deref(), Some("."));
+    let second: SuccessEnvelope<AddData> = success(&linked(&["add", "again", "--agent", "a"]));
+    assert!(second.meta.warnings.is_empty());
+
+    let log = std::fs::read(&shared).unwrap();
+    assert!(log.starts_with(&earlier));
+    assert_eq!(log.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).count(), 3);
+    let exclude = std::fs::read_to_string(main.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.lines().filter(|line| *line == ".scratch/").count(), 1);
+    assert_eq!(fixture_git(&home, &main, &["status", "--porcelain", "--untracked-files=all"]), "");
+    assert_eq!(
+        fixture_git(&home, &worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"]),
+        ""
+    );
+    let listed: SuccessEnvelope<ListData> = success(&linked(&["list"]));
+    assert_eq!(listed.data.items.len(), 3);
+
+    let from_main: SuccessEnvelope<AddData> = success(
+        &command().current_dir(&main).args(["add", "main", "--agent", "a", "--dry-run"]).output().unwrap(),
+    );
+    assert_eq!(from_main.meta.file.as_deref(), Some(main.join(".papercuts.jsonl").to_str().unwrap()));
+
+    let bare = temp.path().join("bare.git");
+    fixture_git(&home, temp.path(), &["clone", "-q", "--bare", main.to_str().unwrap(), bare.to_str().unwrap()]);
+    let bare_worktree = temp.path().join("bare-task");
+    fixture_git(&home, &bare, &["worktree", "add", "-q", bare_worktree.to_str().unwrap(), "main"]);
+    let bare_worktree = bare_worktree.canonicalize().unwrap();
+    let from_bare: SuccessEnvelope<AddData> = success(
+        &command().current_dir(&bare_worktree).args(["add", "bare", "--agent", "a", "--dry-run"]).output().unwrap(),
+    );
+    assert_eq!(from_bare.meta.file.as_deref(), Some(bare_worktree.join(".papercuts.jsonl").to_str().unwrap()));
+}
+
 #[test]
 fn error_envelope_matrix() {
     let temp = TempDir::new().unwrap();

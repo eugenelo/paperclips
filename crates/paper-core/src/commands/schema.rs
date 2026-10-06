@@ -35,7 +35,7 @@ pub fn contract(target: SchemaTarget) -> Value {
             },
             "records": records,
             "id": {"prefix":"pc_","hex_digits":12,"hash":"SHA-256 first 6 bytes","fields_in_order":["ts","agent","text","severity","sorted tags joined with comma"],"encoding":"u32 little-endian UTF-8 byte length before each field"},
-            "discovery": ["--file","PAPERCUTS_FILE","nearest .git directory or file then <root>/.papercuts.jsonl","$HOME/.papercuts/log.jsonl"],
+            "discovery": ["--file","PAPERCUTS_FILE","nearest .git directory or file then <root>/.papercuts.jsonl; from a linked worktree <main checkout>/.scratch/papercuts.jsonl, adding .scratch/ to .git/info/exclude on the first add when not ignored","$HOME/.papercuts/log.jsonl"],
             "errors": errors,
             "exit_codes": exit_codes,
             "storage": {"format":"append-only JSONL","locking":"local filesystems only; 50 retries x 100ms","durability":"best effort; no fsync per append"}

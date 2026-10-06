@@ -19,6 +19,8 @@ pub struct ResolvedFile {
     pub path: PathBuf,
     pub explicit: bool,
     pub repo: Option<PathBuf>,
+    /// Main checkout whose private `.scratch/` log a linked worktree's default discovery chose.
+    pub main_checkout: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -54,6 +56,12 @@ struct ClipWarningCounts {
     orphan_notes: usize,
 }
 
+/// Resolve the papercuts log: `--file`, then `PAPERCUTS_FILE`, then the repository default.
+/// A linked worktree shares `<main checkout>/.scratch/papercuts.jsonl`, so entries outlive
+/// the worktree and never land in its branch; other repositories use `<root>/.papercuts.jsonl`.
+/// @param flag Optional `--file` path.
+/// @return The resolved log location.
+/// @throws AppError When the working directory, worktree metadata, or home directory is unavailable.
 pub fn discover(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
     let cwd = std::env::current_dir().map_err(|error| AppError::from_io(error, Path::new(".")))?;
     let repo = find_repo_root(&cwd);
@@ -62,6 +70,7 @@ pub fn discover(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
             path: absolute(&cwd, path),
             explicit: true,
             repo,
+            main_checkout: None,
         });
     }
     if let Some(path) = std::env::var_os("PAPERCUTS_FILE")
@@ -71,14 +80,11 @@ pub fn discover(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
             path: absolute(&cwd, PathBuf::from(path)),
             explicit: true,
             repo,
+            main_checkout: None,
         });
     }
     if let Some(root) = repo.clone() {
-        return Ok(ResolvedFile {
-            path: root.join(".papercuts.jsonl"),
-            explicit: false,
-            repo: Some(root),
-        });
+        return repository_default(root, "papercuts.jsonl", ".papercuts.jsonl");
     }
     let home = std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -93,9 +99,16 @@ pub fn discover(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
         path: absolute(&cwd, home).join(".papercuts/log.jsonl"),
         explicit: false,
         repo: None,
+        main_checkout: None,
     })
 }
 
+/// Resolve the paperclips log: `--file`, then `PAPERCLIP_FILE`, then the repository default.
+/// A linked worktree shares `<main checkout>/.scratch/paperclips.jsonl`, so entries outlive
+/// the worktree and never land in its branch; other repositories use `<root>/.paperclips.jsonl`.
+/// @param flag Optional `--file` path.
+/// @return The resolved log location.
+/// @throws AppError When the working directory, worktree metadata, or home directory is unavailable.
 pub fn discover_clips(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
     let cwd = std::env::current_dir().map_err(|error| AppError::from_io(error, Path::new(".")))?;
     let repo = find_repo_root(&cwd);
@@ -104,6 +117,7 @@ pub fn discover_clips(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
             path: absolute(&cwd, path),
             explicit: true,
             repo,
+            main_checkout: None,
         });
     }
     if let Some(path) = std::env::var_os("PAPERCLIP_FILE")
@@ -113,14 +127,11 @@ pub fn discover_clips(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
             path: absolute(&cwd, PathBuf::from(path)),
             explicit: true,
             repo,
+            main_checkout: None,
         });
     }
     if let Some(root) = repo.clone() {
-        return Ok(ResolvedFile {
-            path: root.join(".paperclips.jsonl"),
-            explicit: false,
-            repo: Some(root),
-        });
+        return repository_default(root, "paperclips.jsonl", ".paperclips.jsonl");
     }
     let home = std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -135,7 +146,131 @@ pub fn discover_clips(flag: Option<PathBuf>) -> AppResult<ResolvedFile> {
         path: absolute(&cwd, home).join(".paperclips/log.jsonl"),
         explicit: false,
         repo: None,
+        main_checkout: None,
     })
+}
+
+/// Choose a repository's default log: the main checkout's private log for a linked worktree.
+/// @param root Repository root found by `find_repo_root`.
+/// @param shared File name under `<main checkout>/.scratch/` for a linked worktree.
+/// @param local File name under `root` for any other repository.
+/// @return The resolved default log; `repo` stays the worktree root for record paths.
+/// @throws AppError When a linked worktree's Git metadata cannot be read.
+fn repository_default(root: PathBuf, shared: &str, local: &str) -> AppResult<ResolvedFile> {
+    if let Some(main) = linked_main_checkout(&root)? {
+        return Ok(ResolvedFile {
+            path: main.join(".scratch").join(shared),
+            explicit: false,
+            repo: Some(root),
+            main_checkout: Some(main),
+        });
+    }
+    Ok(ResolvedFile {
+        path: root.join(local),
+        explicit: false,
+        repo: Some(root),
+        main_checkout: None,
+    })
+}
+
+/// Find the main checkout of a linked worktree from its Git metadata, without running Git.
+/// A linked worktree's `.git` file names a per-worktree directory holding `commondir`; a
+/// submodule's does not. A bare repository's worktrees have no main checkout.
+/// @param root Repository root found by `find_repo_root`.
+/// @return The canonical main checkout, or None when `root` is not a linked worktree of one.
+/// @throws AppError When `.git`, `commondir`, or the common directory cannot be read.
+pub fn linked_main_checkout(root: &Path) -> AppResult<Option<PathBuf>> {
+    let dot_git = root.join(".git");
+    if !dot_git.is_file() {
+        return Ok(None);
+    }
+    let content =
+        std::fs::read_to_string(&dot_git).map_err(|error| AppError::from_io(error, &dot_git))?;
+    let Some(gitdir) = content.strip_prefix("gitdir:").map(str::trim) else {
+        return Ok(None);
+    };
+    let gitdir = root.join(gitdir);
+    let commondir = gitdir.join("commondir");
+    if !commondir.is_file() {
+        return Ok(None);
+    }
+    let common = std::fs::read_to_string(&commondir)
+        .map_err(|error| AppError::from_io(error, &commondir))?;
+    let common = gitdir.join(common.trim());
+    let common = common
+        .canonicalize()
+        .map_err(|error| AppError::from_io(error, &common))?;
+    let Some(main) = common.parent() else {
+        return Ok(None);
+    };
+    let owned = main
+        .join(".git")
+        .canonicalize()
+        .is_ok_and(|candidate| candidate == common);
+    Ok(owned.then(|| main.to_path_buf()))
+}
+
+/// Keep a main checkout's shared `.scratch/` log out of Git before the first append,
+/// adding `.scratch/` to the repository's `info/exclude` when nothing ignores it yet.
+/// @param main Main checkout holding the shared log.
+/// @param log Shared log path below `<main>/.scratch/`.
+/// @return A warning naming the exclude file when this call added the rule, else None.
+/// @throws AppError When Git cannot answer, or the rule cannot be written or does not take effect.
+pub fn ignore_scratch(main: &Path, log: &Path) -> AppResult<Option<String>> {
+    let ignored = || -> AppResult<bool> {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(main)
+            .args(["check-ignore", "-q", "--"])
+            .arg(log)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|error| AppError::from_io(error, Path::new("git")))?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(AppError::config(
+                format!("git check-ignore failed for {}", log.display()),
+                "Repair the main checkout's Git state, or pass --file PATH.",
+            )),
+        }
+    };
+    if ignored()? {
+        return Ok(None);
+    }
+    let exclude = main.join(".git/info/exclude");
+    if let Some(parent) = exclude.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| AppError::from_io(error, parent))?;
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(&exclude)
+        .map_err(|error| AppError::from_io(error, &exclude))?;
+    let length = file
+        .seek(SeekFrom::End(0))
+        .map_err(|error| AppError::from_io(error, &exclude))?;
+    let mut last = [0u8; 1];
+    if length > 0 {
+        file.seek(SeekFrom::Start(length - 1))
+            .and_then(|_| file.read_exact(&mut last))
+            .map_err(|error| AppError::from_io(error, &exclude))?;
+    }
+    let rule = if length > 0 && last[0] != b'\n' { "\n.scratch/\n" } else { ".scratch/\n" };
+    file.write_all(rule.as_bytes())
+        .map_err(|error| AppError::from_io(error, &exclude))?;
+    if !ignored()? {
+        return Err(AppError::config(
+            format!("{} still does not ignore .scratch/", main.display()),
+            format!("Check {}, or pass --file PATH.", exclude.display()),
+        ));
+    }
+    Ok(Some(format!(
+        "added .scratch/ to {} so the shared log stays uncommitted",
+        exclude.display()
+    )))
 }
 
 /// Convert an absolute path to a repo-relative path.

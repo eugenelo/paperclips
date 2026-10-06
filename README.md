@@ -9,6 +9,9 @@ AI agents generate a lot of signal during work — dead-end tool calls, broken l
 - **papercuts** — log friction (what to fix) — `.papercuts.jsonl`
 - **paperclip** — log wins (what to keep) — `.paperclips.jsonl`
 
+Without `--file` or the `PAPERCUTS_FILE`/`PAPERCLIP_FILE` overrides, each log lives at the repository root.
+From a linked Git worktree, both binaries instead use the main checkout's `.scratch/papercuts.jsonl` and `.scratch/paperclips.jsonl`, adding `.scratch/` to the repository's `.git/info/exclude` on the first `add` when nothing ignores it, so entries outlive the worktree and never enter its branch.
+
 ## Lifecycle
 
 The lifecycle inverts, not just the sentiment.
