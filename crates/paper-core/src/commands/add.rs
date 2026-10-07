@@ -14,6 +14,14 @@ pub struct AddData {
     pub record: CutRecord,
 }
 
+/// Append one cut to the discovered log, first keeping a linked worktree's shared
+/// `.scratch/` log ignored; a duplicate returns the existing record.
+/// @param args Parsed `add` arguments.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print JSON.
+/// @param now Record timestamp.
+/// @return Zero on success, including dry runs and duplicates.
+/// @throws AppError On discovery, invalid input, ignore setup, log IO, or output failure.
 pub fn run(args: AddArgs, file: Option<PathBuf>, pretty: bool, now: Timestamp) -> AppResult<i32> {
     let resolved = store::discover(file)?;
     let text = read_text(args.text)?;
@@ -80,6 +88,11 @@ pub fn run(args: AddArgs, file: Option<PathBuf>, pretty: bool, now: Timestamp) -
         warnings.push("dry run; no record appended".into());
         (false, record)
     } else {
+        if let Some(main) = resolved.main_checkout.as_deref()
+            && let Some(warning) = store::ignore_scratch(main, &resolved.path)?
+        {
+            warnings.push(warning);
+        }
         store::with_exclusive(&resolved.path, true, |log| {
             let bytes = store::read_bytes(log, &resolved.path)?;
             if let Some(existing) = store::fold_bytes(&bytes)

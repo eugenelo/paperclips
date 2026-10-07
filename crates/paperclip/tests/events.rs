@@ -201,3 +201,70 @@ fn clip_truncation_is_visible_after_filtering() {
         }
     }
 }
+
+/// Run Git for a fixture under an isolated configuration that ignores nothing by default.
+/// @param home Isolated HOME and XDG_CONFIG_HOME root.
+/// @param cwd Directory to run in.
+/// @param args Git arguments.
+/// @return Captured stdout as UTF-8.
+fn fixture_git(home: &Path, cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A clip added from a linked worktree joins the main checkout's ignored `.scratch/` log,
+/// keeps earlier clips, and leaves the worktree untouched.
+#[test]
+fn linked_worktree_clips_land_in_main_checkout_scratch() {
+    if !std::process::Command::new("git").arg("--version").output().is_ok_and(|output| output.status.success()) {
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let main = temp.path().join("main");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&main).unwrap();
+    fixture_git(&home, &main, &["init", "-q", "-b", "main"]);
+    std::fs::write(main.join("README.md"), "fixture\n").unwrap();
+    fixture_git(&home, &main, &["add", "README.md"]);
+    fixture_git(&home, &main, &["commit", "-q", "-m", "fixture"]);
+    let worktree = temp.path().join("main-task");
+    fixture_git(&home, &main, &["worktree", "add", "-q", "-b", "dev-cycle/task", worktree.to_str().unwrap()]);
+    let main = main.canonicalize().unwrap();
+    let shared = main.join(".scratch/paperclips.jsonl");
+    run(&shared, &["add", "earlier clip"]);
+    let earlier = std::fs::read(&shared).unwrap();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("paperclip")
+        .current_dir(&worktree)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("PAPERCUTS_AGENT", "environment")
+        .env_remove("PAPERCLIP_FILE")
+        .args(["add", "from worktree"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let added: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(added["meta"]["file"], shared.to_str().unwrap());
+    assert!(added["meta"]["warnings"][0].as_str().unwrap().contains("added .scratch/ to"));
+    let log = std::fs::read(&shared).unwrap();
+    assert!(log.starts_with(&earlier));
+    assert_eq!(log.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).count(), 2);
+    assert_eq!(fixture_git(&home, &main, &["status", "--porcelain", "--untracked-files=all"]), "");
+    assert_eq!(
+        fixture_git(&home, &worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"]),
+        ""
+    );
+}

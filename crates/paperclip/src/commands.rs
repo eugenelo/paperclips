@@ -15,6 +15,20 @@ pub struct ClipAddData {
     pub record: ClipRecord,
 }
 
+/// Append one clip to the discovered log, first keeping a linked worktree's shared
+/// `.scratch/` log ignored; a duplicate is not appended again.
+/// @param text Clip text, or None to read stdin.
+/// @param agent Optional reporter name.
+/// @param tags Clip tags.
+/// @param impact Clip impact.
+/// @param dry_run Whether to report the record without appending.
+/// @param force Whether to bypass the secret scan.
+/// @param where_loc Optional component the clip is about.
+/// @param file Optional explicit log path.
+/// @param pretty Whether to pretty-print JSON.
+/// @param now Record timestamp.
+/// @return Zero on success, including dry runs and duplicates.
+/// @throws AppError On discovery, invalid input, ignore setup, log IO, or output failure.
 pub fn add(
     text: Option<String>,
     agent: Option<String>,
@@ -79,6 +93,11 @@ pub fn add(
         warnings.push("dry run; no record appended".into());
         (false, record)
     } else {
+        if let Some(main) = resolved.main_checkout.as_deref()
+            && let Some(warning) = store::ignore_scratch(main, &resolved.path)?
+        {
+            warnings.push(warning);
+        }
         store::with_exclusive(&resolved.path, true, |log| {
             let bytes = store::read_bytes(log, &resolved.path)?;
             let folded = store::fold_clip_bytes(&bytes);
